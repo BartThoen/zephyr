@@ -20,7 +20,6 @@
 #include <zephyr/types.h>
 #include <stddef.h>
 #include <errno.h>
-#include <zephyr/zephyr.h>
 #include <zephyr/sys_clock.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
@@ -52,7 +51,7 @@
 #define PASS(...) \
 	do { \
 		bst_result = Passed; \
-		bs_trace_info_time(1, __VA_ARGS__); \
+		bs_trace_info_time(1, "PASSED: " __VA_ARGS__); \
 	} while (0)
 
 #define AD_SIZE 1

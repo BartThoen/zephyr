@@ -11,7 +11,6 @@
  * This module contains routines that are used to initialize the kernel.
  */
 
-#include <zephyr/zephyr.h>
 #include <offsets_short.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
@@ -109,6 +108,15 @@ void __weak z_early_memcpy(void *dst, const void *src, size_t n)
 __boot_func
 void z_bss_zero(void)
 {
+	if (IS_ENABLED(CONFIG_ARCH_POSIX)) {
+		/* native_posix gets its memory cleared on entry by
+		 * the host OS, and in any case the host clang/lld
+		 * doesn't emit the __bss_end symbol this code expects
+		 * to see
+		 */
+		return;
+	}
+
 	z_early_memset(__bss_start, 0, __bss_end - __bss_start);
 #if DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_ccm), okay)
 	z_early_memset(&__ccm_bss_start, 0,
@@ -216,7 +224,7 @@ static void bg_thread_main(void *unused1, void *unused2, void *unused3)
 #endif
 	boot_banner();
 
-#if defined(CONFIG_CPLUSPLUS) && !defined(CONFIG_ARCH_POSIX)
+#if defined(CONFIG_CPLUSPLUS)
 	void z_cpp_init_static(void);
 	z_cpp_init_static();
 #endif
@@ -367,7 +375,7 @@ __boot_func
 void z_early_boot_rand_get(uint8_t *buf, size_t length)
 {
 #ifdef CONFIG_ENTROPY_HAS_DRIVER
-	const struct device *entropy = DEVICE_DT_GET_OR_NULL(DT_CHOSEN(zephyr_entropy));
+	const struct device *const entropy = DEVICE_DT_GET_OR_NULL(DT_CHOSEN(zephyr_entropy));
 	int rc;
 
 	if (!device_is_ready(entropy)) {

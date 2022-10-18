@@ -22,7 +22,12 @@ LOG_MODULE_REGISTER(net_websocket, CONFIG_NET_WEBSOCKET_LOG_LEVEL);
 #include <zephyr/sys/fdtable.h>
 #include <zephyr/net/net_core.h>
 #include <zephyr/net/net_ip.h>
+#if defined(CONFIG_POSIX_API)
+#include <zephyr/posix/unistd.h>
+#include <zephyr/posix/sys/socket.h>
+#else
 #include <zephyr/net/socket.h>
+#endif
 #include <zephyr/net/http_client.h>
 #include <zephyr/net/websocket.h>
 
@@ -700,6 +705,11 @@ int websocket_send_msg(int ws_sock, const uint8_t *payload, size_t payload_len,
 quit:
 	if (data_to_send != payload) {
 		k_free(data_to_send);
+	}
+
+	/* Do no math with 0 and error codes */
+	if (ret <= 0) {
+		return ret;
 	}
 
 	return ret - hdr_len;

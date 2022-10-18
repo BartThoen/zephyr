@@ -542,6 +542,18 @@ static int is_abort_cb(void *next, void *curr, lll_prepare_cb_t *resume_cb)
 {
 	struct lll_scan *lll = curr;
 
+#if defined(CONFIG_BT_CENTRAL)
+	/* Irrespective of same state/role (initiator radio event) or different
+	 * state/role (example, advertising radio event) that overlaps the
+	 * initiator, if a CONNECT_REQ PDU has been enqueued for transmission
+	 * then initiator shall not abort.
+	 */
+	if (lll->conn && lll->conn->central.initiated) {
+		/* Connection Establishment initiated, do not abort */
+		return 0;
+	}
+#endif /* CONFIG_BT_CENTRAL */
+
 	/* Check if pre-emption by a different state/role radio event */
 	if (next != curr) {
 #if defined(CONFIG_BT_CTLR_ADV_EXT)
@@ -574,11 +586,6 @@ static int is_abort_cb(void *next, void *curr, lll_prepare_cb_t *resume_cb)
 	}
 
 	if (0) {
-#if defined(CONFIG_BT_CENTRAL)
-	} else if (lll->conn && lll->conn->central.initiated) {
-		/* Connection Establishment initiated, do not abort */
-		return 0;
-#endif /* CONFIG_BT_CENTRAL */
 #if defined(CONFIG_BT_CTLR_ADV_EXT)
 	} else if (unlikely(lll->duration_reload && !lll->duration_expire)) {
 		/* Duration expired, do not continue, close and generate
@@ -838,6 +845,7 @@ static void isr_common_done(void *param)
 
 #if defined(CONFIG_BT_CTLR_ADV_EXT)
 	lll->is_adv_ind = 0U;
+	lll->is_aux_sched = 0U;
 #endif /* CONFIG_BT_CTLR_ADV_EXT */
 
 	/* setup tIFS switching */
@@ -1270,7 +1278,7 @@ static inline int isr_rx_pdu(struct lll_scan *lll, struct pdu_adv *pdu_adv_rx,
 	} else if (((pdu_adv_rx->type == PDU_ADV_TYPE_ADV_IND) ||
 		    (pdu_adv_rx->type == PDU_ADV_TYPE_SCAN_IND)) &&
 		   (pdu_adv_rx->len <= sizeof(struct pdu_adv_adv_ind)) &&
-		   lll->type &&
+		   lll->type && !lll->state &&
 #if defined(CONFIG_BT_CENTRAL)
 		   !lll->conn) {
 #else /* !CONFIG_BT_CENTRAL */

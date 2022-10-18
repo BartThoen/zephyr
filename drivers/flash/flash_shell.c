@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/zephyr.h>
+#include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
 
 #include <zephyr/shell/shell.h>
@@ -14,7 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <zephyr/drivers/flash.h>
-#include <soc.h>
 
 /* Buffer is only needed for bytes that follow command and offset */
 #define BUF_ARRAY_CNT (CONFIG_SHELL_ARGC_MAX - 2)
@@ -27,7 +26,7 @@
  */
 BUILD_ASSERT(BUF_ARRAY_CNT >= 1);
 
-static const struct device *zephyr_flash_controller =
+static const struct device *const zephyr_flash_controller =
 	DEVICE_DT_GET_OR_NULL(DT_CHOSEN(zephyr_flash_controller));
 
 static uint8_t __aligned(4) test_arr[TEST_ARR_SIZE];

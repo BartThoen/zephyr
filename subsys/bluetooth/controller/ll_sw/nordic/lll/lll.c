@@ -59,7 +59,7 @@ static struct {
 } event;
 
 /* Entropy device */
-static const struct device *dev_entropy;
+static const struct device *const dev_entropy = DEVICE_DT_GET(DT_NODELABEL(rng));
 
 static int init_reset(void);
 #if defined(CONFIG_BT_CTLR_LOW_LAT_ULL_DONE)
@@ -163,8 +163,7 @@ int lll_init(void)
 	int err;
 
 	/* Get reference to entropy device */
-	dev_entropy = device_get_binding(DT_LABEL(DT_NODELABEL(rng)));
-	if (!dev_entropy) {
+	if (!device_is_ready(dev_entropy)) {
 		return -ENODEV;
 	}
 
@@ -202,12 +201,34 @@ int lll_init(void)
 	irq_enable(RADIO_IRQn);
 	irq_enable(RTC0_IRQn);
 	irq_enable(HAL_SWI_RADIO_IRQ);
-#if defined(CONFIG_BT_CTLR_LOW_LAT) || \
-	(CONFIG_BT_CTLR_ULL_HIGH_PRIO != CONFIG_BT_CTLR_ULL_LOW_PRIO)
-	irq_enable(HAL_SWI_JOB_IRQ);
-#endif
+	if (IS_ENABLED(CONFIG_BT_CTLR_LOW_LAT) ||
+		(CONFIG_BT_CTLR_ULL_HIGH_PRIO != CONFIG_BT_CTLR_ULL_LOW_PRIO)) {
+		irq_enable(HAL_SWI_JOB_IRQ);
+	}
 
 	radio_setup();
+
+	return 0;
+}
+
+int lll_deinit(void)
+{
+	int err;
+
+	/* Release clocks */
+	err = lll_clock_deinit();
+	if (err < 0) {
+		return err;
+	}
+
+	/* Disable IRQs */
+	irq_disable(RADIO_IRQn);
+	irq_disable(RTC0_IRQn);
+	irq_disable(HAL_SWI_RADIO_IRQ);
+	if (IS_ENABLED(CONFIG_BT_CTLR_LOW_LAT) ||
+		(CONFIG_BT_CTLR_ULL_HIGH_PRIO != CONFIG_BT_CTLR_ULL_LOW_PRIO)) {
+		irq_disable(HAL_SWI_JOB_IRQ);
+	}
 
 	return 0;
 }
@@ -312,7 +333,6 @@ int lll_done(void *param)
 	LL_ASSERT(!param || next);
 
 	/* check if current LLL event is done */
-	ull = NULL;
 	if (!param) {
 		/* Reset current event instance */
 		LL_ASSERT(event.curr.abort_cb);
@@ -327,6 +347,8 @@ int lll_done(void *param)
 
 		if (param) {
 			ull = HDR_LLL2ULL(param);
+		} else {
+			ull = NULL;
 		}
 
 		if (IS_ENABLED(CONFIG_BT_CTLR_LOW_LAT) &&
@@ -716,10 +738,13 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 #if !defined(CONFIG_BT_CTLR_LOW_LAT)
 	uint32_t ret;
 
-	/* Stop any scheduled preempt ticker */
-	ret = preempt_ticker_stop();
-	LL_ASSERT((ret == TICKER_STATUS_SUCCESS) ||
-		  (ret == TICKER_STATUS_BUSY));
+	/* NOTE: preempt timeout started prior for the current event that has
+	 *       its prepare that is now invoked is not explicitly stopped here.
+	 *       If there is a next prepare event in pipeline, then the prior
+	 *       preempt timeout if started will be stopped before starting
+	 *       the new preempt timeout. Refer to implementation in
+	 *       preempt_ticker_start().
+	 */
 
 	/* Find next prepare needing preempt timeout to be setup */
 	do {

@@ -35,7 +35,8 @@
 #include <zephyr/mgmt/mcumgr/serial.h>
 #endif
 
-static const struct device *uart_console_dev;
+static const struct device *const uart_console_dev =
+	DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 
 #ifdef CONFIG_UART_CONSOLE_DEBUG_SERVER_HOOKS
 
@@ -96,11 +97,11 @@ static int console_out(int c)
 #endif
 
 #if defined(CONFIG_STDOUT_CONSOLE)
-extern void __stdout_hook_install(int (*hook)(int));
+extern void __stdout_hook_install(int (*hook)(int c));
 #endif
 
 #if defined(CONFIG_PRINTK)
-extern void __printk_hook_install(int (*fn)(int));
+extern void __printk_hook_install(int (*fn)(int c));
 #endif
 
 #if defined(CONFIG_CONSOLE_HANDLER)
@@ -589,8 +590,6 @@ static int uart_console_init(const struct device *arg)
 
 	ARG_UNUSED(arg);
 
-	/* Claim console device */
-	uart_console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 	if (!device_is_ready(uart_console_dev)) {
 		return -ENODEV;
 	}

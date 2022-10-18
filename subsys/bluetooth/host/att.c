@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/zephyr.h>
+#include <zephyr/kernel.h>
 #include <string.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -139,8 +139,10 @@ static k_tid_t att_handle_rsp_thread;
 
 struct bt_att_tx_meta_data {
 	struct bt_att_chan *att_chan;
+	uint16_t attr_count;
 	bt_gatt_complete_func_t func;
 	void *user_data;
+	enum bt_att_chan_opt chan_opt;
 };
 
 struct bt_att_tx_meta {
@@ -165,6 +167,7 @@ static inline void tx_meta_data_free(struct bt_att_tx_meta_data *data)
 	k_fifo_put(&free_att_tx_meta_data, data);
 }
 
+static int bt_att_chan_send(struct bt_att_chan *chan, struct net_buf *buf);
 static bt_conn_tx_cb_t chan_cb(const struct net_buf *buf);
 static bt_conn_tx_cb_t att_cb(const struct net_buf *buf);
 
@@ -234,14 +237,6 @@ static int chan_send(struct bt_att_chan *chan, struct net_buf *buf)
 			return -EAGAIN;
 		}
 
-		/* Check the encryption level for EATT */
-		if (bt_conn_get_security(chan->att->conn) < BT_SECURITY_L2) {
-			/* Vol 3, Part G, Section 5.3.2 Channel Requirements states:
-			 * The channel shall be encrypted.
-			 */
-			return -EINVAL;
-		}
-
 		data->att_chan = chan;
 
 		/* bt_l2cap_chan_send does actually return the number of bytes
@@ -281,14 +276,93 @@ static int chan_send(struct bt_att_chan *chan, struct net_buf *buf)
 	return err;
 }
 
+static bool att_chan_matches_chan_opt(struct bt_att_chan *chan, enum bt_att_chan_opt chan_opt)
+{
+	__ASSERT_NO_MSG(chan_opt <= BT_ATT_CHAN_OPT_ENHANCED_ONLY);
+
+	if (chan_opt == BT_ATT_CHAN_OPT_NONE) {
+		return true;
+	}
+
+	if (atomic_test_bit(chan->flags, ATT_ENHANCED)) {
+		return (chan_opt & BT_ATT_CHAN_OPT_ENHANCED_ONLY);
+	} else {
+		return (chan_opt & BT_ATT_CHAN_OPT_UNENHANCED_ONLY);
+	}
+}
+
+static struct net_buf *get_first_buf_matching_chan(struct k_fifo *fifo, struct bt_att_chan *chan)
+{
+	if (IS_ENABLED(CONFIG_BT_EATT)) {
+		struct k_fifo skipped;
+		struct net_buf *buf;
+		struct net_buf *ret = NULL;
+
+		k_fifo_init(&skipped);
+
+		while ((buf = net_buf_get(fifo, K_NO_WAIT))) {
+			if (!ret &&
+			    att_chan_matches_chan_opt(chan, bt_att_tx_meta_data(buf)->chan_opt)) {
+				ret = buf;
+			} else {
+				net_buf_put(&skipped, buf);
+			}
+		}
+
+		__ASSERT_NO_MSG(k_fifo_is_empty(fifo));
+
+		while ((buf = net_buf_get(&skipped, K_NO_WAIT))) {
+			net_buf_put(fifo, buf);
+		}
+
+		__ASSERT_NO_MSG(k_fifo_is_empty(&skipped));
+
+		return ret;
+	} else {
+		return net_buf_get(fifo, K_NO_WAIT);
+	}
+}
+
+static struct bt_att_req *get_first_req_matching_chan(sys_slist_t *reqs, struct bt_att_chan *chan)
+{
+	if (IS_ENABLED(CONFIG_BT_EATT)) {
+		sys_snode_t *curr, *prev = NULL;
+
+		SYS_SLIST_FOR_EACH_NODE(reqs, curr) {
+			if (att_chan_matches_chan_opt(
+				    chan, bt_att_tx_meta_data(ATT_REQ(curr)->buf)->chan_opt)) {
+				break;
+			}
+
+			prev = curr;
+		}
+
+		if (curr) {
+			sys_slist_remove(reqs, prev, curr);
+
+			return ATT_REQ(curr);
+		}
+
+		return NULL;
+	}
+
+	sys_snode_t *node = sys_slist_get(reqs);
+
+	if (node) {
+		return ATT_REQ(node);
+	} else {
+		return NULL;
+	}
+}
+
 static int process_queue(struct bt_att_chan *chan, struct k_fifo *queue)
 {
 	struct net_buf *buf;
 	int err;
 
-	buf = net_buf_get(queue, K_NO_WAIT);
+	buf = get_first_buf_matching_chan(queue, chan);
 	if (buf) {
-		err = chan_send(chan, buf);
+		err = bt_att_chan_send(chan, buf);
 		if (err) {
 			/* Push it back if it could not be send */
 			k_queue_prepend(&queue->_queue, buf);
@@ -320,7 +394,7 @@ static int chan_req_send(struct bt_att_chan *chan, struct bt_att_req *req)
 	buf = req->buf;
 	req->buf = NULL;
 
-	err = chan_send(chan, buf);
+	err = bt_att_chan_send(chan, buf);
 	if (err) {
 		/* We still have the ownership of the buffer */
 		req->buf = buf;
@@ -419,6 +493,7 @@ static void chan_tx_complete(struct bt_conn *conn, void *user_data, int err)
 	struct bt_att_tx_meta_data *data = user_data;
 	struct bt_att_chan *chan = data->att_chan;
 	bt_gatt_complete_func_t func = data->func;
+	uint16_t attr_count = data->attr_count;
 	void *ud = data->user_data;
 
 	BT_DBG("TX Complete chan %p CID 0x%04X", chan, chan->chan.tx.cid);
@@ -426,9 +501,10 @@ static void chan_tx_complete(struct bt_conn *conn, void *user_data, int err)
 	tx_meta_data_free(data);
 
 	if (!err && func) {
-		func(conn, ud);
+		for (uint16_t i = 0; i < attr_count; i++) {
+			func(conn, ud);
+		}
 	}
-
 }
 
 static void chan_unknown(struct bt_conn *conn, void *user_data, int err)
@@ -575,30 +651,37 @@ static int bt_att_chan_send(struct bt_att_chan *chan, struct net_buf *buf)
 	BT_DBG("chan %p flags %lu code 0x%02x", chan, atomic_get(chan->flags),
 	       ((struct bt_att_hdr *)buf->data)->code);
 
+	if (IS_ENABLED(CONFIG_BT_EATT) &&
+	    !att_chan_matches_chan_opt(chan, bt_att_tx_meta_data(buf)->chan_opt)) {
+		return -EINVAL;
+	}
+
 	return chan_send(chan, buf);
 }
 
 static void att_send_process(struct bt_att *att)
 {
-	struct bt_att_chan *chan, *tmp;
-	struct net_buf *buf;
-	int err = -ENOENT;
-
-	buf = net_buf_get(&att->tx_queue, K_NO_WAIT);
-	if (!buf) {
-		return;
-	}
+	struct bt_att_chan *chan, *tmp, *prev = NULL;
+	int err = 0;
 
 	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&att->chans, chan, tmp, node) {
-		err = bt_att_chan_send(chan, buf);
-		if (err >= 0) {
-			break;
+		if (err == -ENOENT && prev &&
+		    (atomic_test_bit(chan->flags, ATT_ENHANCED) ==
+		     atomic_test_bit(prev->flags, ATT_ENHANCED))) {
+			/* If there was nothing to send for the previous channel and the current
+			 * channel has the same "enhancedness", there will be nothing to send for
+			 * this channel either.
+			 */
+			continue;
 		}
-	}
 
-	if (err < 0) {
-		/* Push it back if it could not be send */
-		k_queue_prepend(&att->tx_queue._queue, buf);
+		err = process_queue(chan, &att->tx_queue);
+		if (!err) {
+			/* Success */
+			return;
+		}
+
+		prev = chan;
 	}
 }
 
@@ -606,7 +689,7 @@ static void bt_att_chan_send_rsp(struct bt_att_chan *chan, struct net_buf *buf)
 {
 	int err;
 
-	err = bt_att_chan_send(chan, buf);
+	err = chan_send(chan, buf);
 	if (err) {
 		/* Responses need to be sent back using the same channel */
 		net_buf_put(&chan->tx_queue, buf);
@@ -717,28 +800,40 @@ static int bt_att_chan_req_send(struct bt_att_chan *chan,
 
 static void att_req_send_process(struct bt_att *att)
 {
-	sys_snode_t *node;
-	struct bt_att_chan *chan, *tmp;
-
-	/* Pull next request from the list */
-	node = sys_slist_get(&att->reqs);
-	if (!node) {
-		return;
-	}
-
-	BT_DBG("req %p", ATT_REQ(node));
+	struct bt_att_req *req = NULL;
+	struct bt_att_chan *chan, *tmp, *prev = NULL;
 
 	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&att->chans, chan, tmp, node) {
-		/* If there is nothing pending use the channel */
-		if (!chan->req) {
-			if (bt_att_chan_req_send(chan, ATT_REQ(node)) >= 0) {
-				return;
-			}
+		/* If there is an ongoing transaction, do not use the channel */
+		if (chan->req) {
+			continue;
 		}
-	}
 
-	/* Prepend back to the list as it could not be sent */
-	sys_slist_prepend(&att->reqs, node);
+		if (!req && prev &&
+		    (atomic_test_bit(chan->flags, ATT_ENHANCED) ==
+		     atomic_test_bit(prev->flags, ATT_ENHANCED))) {
+			/* If there was nothing to send for the previous channel and the current
+			 * channel has the same "enhancedness", there will be nothing to send for
+			 * this channel either.
+			 */
+			continue;
+		}
+
+		prev = chan;
+
+		/* Pull next request from the list */
+		req = get_first_req_matching_chan(&att->reqs, chan);
+		if (!req) {
+			continue;
+		}
+
+		if (bt_att_chan_req_send(chan, req) >= 0) {
+			return;
+		}
+
+		/* Prepend back to the list as it could not be sent */
+		sys_slist_prepend(&att->reqs, &req->node);
+	}
 }
 
 static uint8_t att_handle_rsp(struct bt_att_chan *chan, void *pdu, uint16_t len,
@@ -1536,8 +1631,9 @@ static uint8_t att_read_mult_req(struct bt_att_chan *chan, struct net_buf *buf)
 
 	return 0;
 }
+#endif /* CONFIG_BT_GATT_READ_MULTIPLE */
 
-#if defined(CONFIG_BT_EATT)
+#if defined(CONFIG_BT_GATT_READ_MULT_VAR_LEN)
 static uint8_t read_vl_cb(const struct bt_gatt_attr *attr, uint16_t handle,
 			  void *user_data)
 {
@@ -1631,8 +1727,7 @@ static uint8_t att_read_mult_vl_req(struct bt_att_chan *chan, struct net_buf *bu
 
 	return 0;
 }
-#endif /* CONFIG_BT_EATT */
-#endif /* CONFIG_BT_GATT_READ_MULTIPLE */
+#endif /* CONFIG_BT_GATT_READ_MULT_VAR_LEN */
 
 struct read_group_data {
 	struct bt_att_chan *chan;
@@ -2241,7 +2336,7 @@ static uint8_t att_signed_write_cmd(struct bt_att_chan *chan, struct net_buf *bu
 #endif /* CONFIG_BT_SIGNING */
 
 #if defined(CONFIG_BT_GATT_CLIENT)
-#if defined(CONFIG_BT_SMP)
+#if defined(CONFIG_BT_ATT_RETRY_ON_SEC_ERR)
 static int att_change_security(struct bt_conn *conn, uint8_t err)
 {
 	bt_security_t sec;
@@ -2301,7 +2396,7 @@ static int att_change_security(struct bt_conn *conn, uint8_t err)
 
 	return bt_conn_set_security(conn, sec);
 }
-#endif /* CONFIG_BT_SMP */
+#endif /* CONFIG_BT_ATT_RETRY_ON_SEC_ERR */
 
 static uint8_t att_error_rsp(struct bt_att_chan *chan, struct net_buf *buf)
 {
@@ -2313,20 +2408,30 @@ static uint8_t att_error_rsp(struct bt_att_chan *chan, struct net_buf *buf)
 	BT_DBG("request 0x%02x handle 0x%04x error 0x%02x", rsp->request,
 	       sys_le16_to_cpu(rsp->handle), rsp->error);
 
-	/* Don't retry if there is no req pending or it has been cancelled */
-	if (!chan->req || chan->req == &cancel) {
+	/* Don't retry if there is no req pending or it has been cancelled.
+	 *
+	 * BLUETOOTH SPECIFICATION Version 5.2 [Vol 3, Part F]
+	 * page 1423:
+	 *
+	 * If an error code is received in the ATT_ERROR_RSP PDU that is not
+	 * understood by the client, for example an error code that was reserved
+	 * for future use that is now being used in a future version of the
+	 * specification, then the ATT_ERROR_RSP PDU shall still be considered to
+	 * state that the given request cannot be performed for an unknown reason.
+	 */
+	if (!chan->req || chan->req == &cancel || !rsp->error) {
 		err = BT_ATT_ERR_UNLIKELY;
 		goto done;
 	}
 
 	err = rsp->error;
-#if defined(CONFIG_BT_SMP)
+#if defined(CONFIG_BT_ATT_RETRY_ON_SEC_ERR)
 	/* Check if error can be handled by elevating security. */
 	if (!att_change_security(chan->chan.chan.conn, err)) {
 		chan->req->retrying = true;
 		return 0;
 	}
-#endif /* CONFIG_BT_SMP */
+#endif /* CONFIG_BT_ATT_RETRY_ON_SEC_ERR */
 
 done:
 	return att_handle_rsp(chan, NULL, 0, err);
@@ -2381,7 +2486,9 @@ static uint8_t att_handle_read_mult_rsp(struct bt_att_chan *chan,
 	return att_handle_rsp(chan, buf->data, buf->len, 0);
 }
 
-#if defined(CONFIG_BT_EATT)
+#endif /* CONFIG_BT_GATT_READ_MULTIPLE */
+
+#if defined(CONFIG_BT_GATT_READ_MULT_VAR_LEN)
 static uint8_t att_handle_read_mult_vl_rsp(struct bt_att_chan *chan,
 					struct net_buf *buf)
 {
@@ -2389,8 +2496,7 @@ static uint8_t att_handle_read_mult_vl_rsp(struct bt_att_chan *chan,
 
 	return att_handle_rsp(chan, buf->data, buf->len, 0);
 }
-#endif /* CONFIG_BT_EATT */
-#endif /* CONFIG_BT_GATT_READ_MULTIPLE */
+#endif /* CONFIG_BT_GATT_READ_MULT_VAR_LEN */
 
 static uint8_t att_handle_read_group_rsp(struct bt_att_chan *chan,
 				      struct net_buf *buf)
@@ -2509,13 +2615,13 @@ static const struct att_handler {
 		BT_ATT_READ_MULT_MIN_LEN_REQ,
 		ATT_REQUEST,
 		att_read_mult_req },
-#if defined(CONFIG_BT_EATT)
+#endif /* CONFIG_BT_GATT_READ_MULTIPLE */
+#if defined(CONFIG_BT_GATT_READ_MULT_VAR_LEN)
 	{ BT_ATT_OP_READ_MULT_VL_REQ,
 		BT_ATT_READ_MULT_MIN_LEN_REQ,
 		ATT_REQUEST,
 		att_read_mult_vl_req },
-#endif /* CONFIG_BT_EATT */
-#endif /* CONFIG_BT_GATT_READ_MULTIPLE */
+#endif /* CONFIG_BT_GATT_READ_MULT_VAR_LEN */
 	{ BT_ATT_OP_READ_GROUP_REQ,
 		sizeof(struct bt_att_read_group_req),
 		ATT_REQUEST,
@@ -2581,13 +2687,13 @@ static const struct att_handler {
 		0,
 		ATT_RESPONSE,
 		att_handle_read_mult_rsp },
-#if defined(CONFIG_BT_EATT)
+#endif /* CONFIG_BT_GATT_READ_MULTIPLE */
+#if defined(CONFIG_BT_GATT_READ_MULT_VAR_LEN)
 	{ BT_ATT_OP_READ_MULT_VL_RSP,
 		sizeof(struct bt_att_read_mult_vl_rsp),
 		ATT_RESPONSE,
 		att_handle_read_mult_vl_rsp },
-#endif /* CONFIG_BT_EATT */
-#endif /* CONFIG_BT_GATT_READ_MULTIPLE */
+#endif /* CONFIG_BT_GATT_READ_MULT_VAR_LEN */
 	{ BT_ATT_OP_READ_GROUP_RSP,
 		sizeof(struct bt_att_read_group_rsp),
 		ATT_RESPONSE,
@@ -2892,6 +2998,20 @@ static void att_chan_attach(struct bt_att *att, struct bt_att_chan *chan)
 	sys_slist_prepend(&att->chans, &chan->node);
 }
 
+#if defined(CONFIG_BT_EATT)
+static void cap_eatt_mtu(struct bt_l2cap_le_chan *le_chan)
+{
+	if (le_chan->tx.mtu > le_chan->rx.mtu) {
+		BT_DBG("chan %p (0x%04x): saturating TX MTU to ATT buffer size (%d)",
+		       le_chan, le_chan->tx.cid, CONFIG_BT_L2CAP_TX_MTU);
+	}
+
+	le_chan->tx.mps = MIN(le_chan->tx.mps,
+			      BT_L2CAP_BUF_SIZE(CONFIG_BT_L2CAP_TX_MTU));
+	le_chan->tx.mtu = MIN(le_chan->tx.mtu, CONFIG_BT_L2CAP_TX_MTU);
+}
+#endif
+
 static void bt_att_connected(struct bt_l2cap_chan *chan)
 {
 	struct bt_att_chan *att_chan = ATT_CHAN(chan);
@@ -2901,7 +3021,12 @@ static void bt_att_connected(struct bt_l2cap_chan *chan)
 
 	atomic_set_bit(att_chan->flags, ATT_CONNECTED);
 
-	if (!atomic_test_bit(att_chan->flags, ATT_ENHANCED)) {
+	if (0) {
+#if defined(CONFIG_BT_EATT)
+	} else if (atomic_test_bit(att_chan->flags, ATT_ENHANCED)) {
+		cap_eatt_mtu(le_chan);
+#endif
+	} else {
 		le_chan->tx.mtu = BT_ATT_DEFAULT_LE_MTU;
 		le_chan->rx.mtu = BT_ATT_DEFAULT_LE_MTU;
 	}
@@ -3070,6 +3195,8 @@ static void bt_att_reconfigured(struct bt_l2cap_chan *l2cap_chan)
 	struct bt_att_chan *att_chan = ATT_CHAN(l2cap_chan);
 
 	BT_DBG("chan %p", att_chan);
+
+	cap_eatt_mtu(BT_L2CAP_LE_CHAN(l2cap_chan));
 
 	att_chan_mtu_updated(att_chan);
 }
@@ -3316,16 +3443,31 @@ static void ecred_connect_rsp_cb(struct bt_conn *conn, uint16_t result,
 
 int bt_eatt_connect(struct bt_conn *conn, size_t num_channels)
 {
-	struct bt_att_chan *att_chan = att_get_fixed_chan(conn);
-	struct bt_att *att = att_chan->att;
+	struct bt_att_chan *att_chan;
+	struct bt_att *att;
 	struct bt_l2cap_chan *chan[CONFIG_BT_EATT_MAX + 1] = {};
 	size_t offset = 0;
 	size_t i = 0;
 	int err;
 
+	/* Check the encryption level for EATT */
+	if (bt_conn_get_security(conn) < BT_SECURITY_L2) {
+		/* Vol 3, Part G, Section 5.3.2 Channel Requirements states:
+		 * The channel shall be encrypted.
+		 */
+		return -EPERM;
+	}
+
 	if (num_channels > CONFIG_BT_EATT_MAX || num_channels == 0) {
 		return -EINVAL;
 	}
+
+	if (!conn) {
+		return -EINVAL;
+	}
+
+	att_chan = att_get_fixed_chan(conn);
+	att = att_chan->att;
 
 	while (num_channels--) {
 		att_chan = att_chan_new(att, BIT(ATT_ENHANCED));
@@ -3357,11 +3499,12 @@ int bt_eatt_connect(struct bt_conn *conn, size_t num_channels)
 }
 
 #if defined(CONFIG_BT_EATT_AUTO_CONNECT)
-void eatt_auto_connect(struct bt_conn *conn, uint8_t conn_err)
+static void eatt_auto_connect(struct bt_conn *conn, bt_security_t level,
+			      enum bt_security_err err)
 {
 	int eatt_err;
 
-	if (conn_err) {
+	if (err || level < BT_SECURITY_L2 || !bt_att_fixed_chan_only(conn)) {
 		return;
 	}
 
@@ -3374,7 +3517,7 @@ void eatt_auto_connect(struct bt_conn *conn, uint8_t conn_err)
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
-	.connected = eatt_auto_connect,
+	.security_changed = eatt_auto_connect,
 };
 
 #endif /* CONFIG_BT_EATT_AUTO_CONNECT */
@@ -3476,9 +3619,7 @@ static void bt_eatt_init(void)
 	int err;
 	static struct bt_l2cap_server eatt_l2cap = {
 		.psm = BT_EATT_PSM,
-#if defined(CONFIG_BT_EATT_SEC_LEVEL)
-		.sec_level = CONFIG_BT_EATT_SEC_LEVEL,
-#endif
+		.sec_level = BT_SECURITY_L2,
 		.accept = bt_eatt_accept,
 	};
 
@@ -3739,17 +3880,50 @@ bool bt_att_out_of_sync_sent_on_fixed(struct bt_conn *conn)
 	return atomic_test_bit(att_chan->flags, ATT_OUT_OF_SYNC_SENT);
 }
 
-void bt_att_set_tx_meta_data(struct net_buf *buf, bt_gatt_complete_func_t func, void *user_data)
+void bt_att_set_tx_meta_data(struct net_buf *buf, bt_gatt_complete_func_t func, void *user_data,
+			     enum bt_att_chan_opt chan_opt)
 {
 	struct bt_att_tx_meta_data *data = bt_att_tx_meta_data(buf);
 
 	data->func = func;
 	data->user_data = user_data;
+	data->attr_count = 1;
+	data->chan_opt = chan_opt;
+}
+
+void bt_att_increment_tx_meta_data_attr_count(struct net_buf *buf, uint16_t attr_count)
+{
+	struct bt_att_tx_meta_data *data = bt_att_tx_meta_data(buf);
+
+	data->attr_count += attr_count;
 }
 
 bool bt_att_tx_meta_data_match(const struct net_buf *buf, bt_gatt_complete_func_t func,
-			       const void *user_data)
+			       const void *user_data, enum bt_att_chan_opt chan_opt)
 {
 	return ((bt_att_tx_meta_data(buf)->func == func) &&
-		(bt_att_tx_meta_data(buf)->user_data == user_data));
+		(bt_att_tx_meta_data(buf)->user_data == user_data) &&
+		(bt_att_tx_meta_data(buf)->chan_opt == chan_opt));
+}
+
+void bt_att_free_tx_meta_data(const struct net_buf *buf)
+{
+	tx_meta_data_free(bt_att_tx_meta_data(buf));
+}
+
+bool bt_att_chan_opt_valid(struct bt_conn *conn, enum bt_att_chan_opt chan_opt)
+{
+	if ((chan_opt & (BT_ATT_CHAN_OPT_ENHANCED_ONLY | BT_ATT_CHAN_OPT_UNENHANCED_ONLY)) ==
+	    (BT_ATT_CHAN_OPT_ENHANCED_ONLY | BT_ATT_CHAN_OPT_UNENHANCED_ONLY)) {
+		/* Enhanced and Unenhanced are mutually exclusive */
+		return false;
+	}
+
+	/* Choosing EATT requires EATT channels connected and encryption enabled */
+	if (chan_opt & BT_ATT_CHAN_OPT_ENHANCED_ONLY) {
+		return (bt_conn_get_security(conn) > BT_SECURITY_L1) &&
+		       !bt_att_fixed_chan_only(conn);
+	}
+
+	return true;
 }

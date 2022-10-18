@@ -24,7 +24,12 @@
 #define ADV_INT_UNIT_US      625U
 #define SCAN_INT_UNIT_US     625U
 #define CONN_INT_UNIT_US     1250U
+#define ISO_INT_UNIT_US      CONN_INT_UNIT_US
 #define PERIODIC_INT_UNIT_US 1250U
+
+/* Timeout for Host to accept/reject cis create request */
+/* See BTCore5.3, 4.E.6.7 - Default value 0x1f40 * 625us */
+#define DEFAULT_CONNECTION_ACCEPT_TIMEOUT_US (5 * USEC_PER_SEC)
 
 /* Intervals after which connection or sync establishment is considered lost */
 #define CONN_ESTAB_COUNTDOWN 6U
@@ -144,6 +149,8 @@ enum {
 #else /* !CONFIG_BT_MAX_CONN */
 #define BT_CTLR_ADV_ISO_STREAM_HANDLE_BASE 0
 #endif /* !CONFIG_BT_MAX_CONN */
+#define LL_BIS_ADV_HANDLE_FROM_IDX(stream_handle) \
+	((stream_handle) + (BT_CTLR_ADV_ISO_STREAM_HANDLE_BASE))
 #else /* !CONFIG_BT_CTLR_ADV_ISO */
 #define BT_CTLR_ADV_ISO_STREAM_MAX 0
 #endif /* CONFIG_BT_CTLR_ADV_ISO */
@@ -160,6 +167,8 @@ enum {
 #else /* !CONFIG_BT_MAX_CONN */
 #define BT_CTLR_SYNC_ISO_STREAM_HANDLE_BASE 0
 #endif /* !CONFIG_BT_MAX_CONN */
+#define LL_BIS_SYNC_HANDLE_FROM_IDX(stream_handle) \
+	((stream_handle) + (BT_CTLR_SYNC_ISO_STREAM_HANDLE_BASE))
 #else /* !CONFIG_BT_CTLR_SYNC_ISO */
 #define BT_CTLR_SYNC_ISO_STREAM_MAX 0
 #endif /* !CONFIG_BT_CTLR_SYNC_ISO */
@@ -304,6 +313,8 @@ enum node_rx_type {
 	NODE_RX_TYPE_SYNC_IQ_SAMPLE_REPORT,
 	NODE_RX_TYPE_CONN_IQ_SAMPLE_REPORT,
 	NODE_RX_TYPE_DTM_IQ_SAMPLE_REPORT,
+	NODE_RX_TYPE_IQ_SAMPLE_REPORT_ULL_RELEASE,
+	NODE_RX_TYPE_IQ_SAMPLE_REPORT_LLL_RELEASE,
 
 #if defined(CONFIG_BT_CTLR_USER_EXT)
 	/* No entries shall be added after the NODE_RX_TYPE_USER_START/END */
@@ -537,6 +548,7 @@ struct node_tx_iso;
 void lll_done_score(void *param, uint8_t result);
 
 int lll_init(void);
+int lll_deinit(void);
 int lll_reset(void);
 void lll_resume(void *param);
 void lll_disable(void *param);

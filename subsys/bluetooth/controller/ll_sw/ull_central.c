@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/zephyr.h>
+#include <zephyr/kernel.h>
 #include <soc.h>
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/sys/byteorder.h>
@@ -36,6 +36,7 @@
 #include "lll_conn.h"
 #include "lll_central.h"
 #include "lll_filter.h"
+#include "lll_conn_iso.h"
 
 #if !defined(CONFIG_BT_LL_SW_LLCP_LEGACY)
 #include "ull_tx_queue.h"
@@ -57,7 +58,11 @@
 #include "ll_settings.h"
 
 #if !defined(CONFIG_BT_LL_SW_LLCP_LEGACY)
-#include "ll_sw/ull_llcp.h"
+#include "isoal.h"
+#include "ull_iso_types.h"
+#include "ull_conn_iso_types.h"
+
+#include "ull_llcp.h"
 #endif /* !CONFIG_BT_LL_SW_LLCP_LEGACY */
 
 #define BT_DBG_ENABLED IS_ENABLED(CONFIG_BT_DEBUG_HCI_DRIVER)
@@ -211,6 +216,16 @@ uint8_t ll_create_connection(uint16_t scan_interval, uint16_t scan_window,
 	conn_lll->nesn = 0;
 	conn_lll->empty = 0;
 
+#if defined(CONFIG_BT_CTLR_PHY)
+	/* Use the default 1M PHY, extended connection initiation in LLL will
+	 * update this with the correct PHY.
+	 */
+	conn_lll->phy_tx = PHY_1M;
+	conn_lll->phy_flags = 0;
+	conn_lll->phy_tx_time = PHY_1M;
+	conn_lll->phy_rx = PHY_1M;
+#endif /* CONFIG_BT_CTLR_PHY */
+
 #if defined(CONFIG_BT_LL_SW_LLCP_LEGACY)
 #if defined(CONFIG_BT_CTLR_DATA_LENGTH)
 	conn_lll->max_tx_octets = PDU_DC_PAYLOAD_SIZE_MIN;
@@ -229,16 +244,6 @@ uint8_t ll_create_connection(uint16_t scan_interval, uint16_t scan_window,
 	ull_dle_init(conn, PHY_1M);
 #endif /* CONFIG_BT_CTLR_DATA_LENGTH */
 #endif /* CONFIG_BT_LL_SW_LLCP_LEGACY */
-
-#if defined(CONFIG_BT_CTLR_PHY)
-	/* Use the default 1M PHY, extended connection initiation in LLL will
-	 * update this with the correct PHY.
-	 */
-	conn_lll->phy_tx = PHY_1M;
-	conn_lll->phy_flags = 0;
-	conn_lll->phy_tx_time = PHY_1M;
-	conn_lll->phy_rx = PHY_1M;
-#endif /* CONFIG_BT_CTLR_PHY */
 
 #if defined(CONFIG_BT_CTLR_CONN_RSSI)
 	conn_lll->rssi_latest = BT_HCI_LE_RSSI_NOT_AVAILABLE;
@@ -449,13 +454,19 @@ conn_is_valid:
 #endif /* CONFIG_BT_CTLR_ADV_EXT */
 #endif /* !CONFIG_BT_CTLR_DATA_LENGTH */
 #else /* CONFIG_BT_LL_SW_LLCP_LEGACY */
-	/* TODO(thoh-ot): Not entirely sure this is correct */
 #if defined(CONFIG_BT_CTLR_DATA_LENGTH)
-	ull_dle_max_time_get(conn, &max_rx_time, &max_tx_time);
-#else /* CONFIG_BT_CTLR_DATA_LENGTH */
+#if defined(CONFIG_BT_CTLR_ADV_EXT)
+	conn->lll.dle.eff.max_tx_time = MAX(conn->lll.dle.eff.max_tx_time,
+					    PDU_DC_MAX_US(PDU_DC_PAYLOAD_SIZE_MIN, lll->phy));
+	conn->lll.dle.eff.max_rx_time = MAX(conn->lll.dle.eff.max_rx_time,
+					    PDU_DC_MAX_US(PDU_DC_PAYLOAD_SIZE_MIN, lll->phy));
+#endif /* CONFIG_BT_CTLR_ADV_EXT */
+	max_tx_time = conn_lll->dle.eff.max_tx_time;
+	max_rx_time = conn_lll->dle.eff.max_rx_time;
+#else /* !CONFIG_BT_CTLR_DATA_LENGTH */
 	max_tx_time = PDU_DC_MAX_US(PDU_DC_PAYLOAD_SIZE_MIN, PHY_1M);
 	max_rx_time = PDU_DC_MAX_US(PDU_DC_PAYLOAD_SIZE_MIN, PHY_1M);
-#endif /* CONFIG_BT_CTLR_DATA_LENGTH */
+#endif /* !CONFIG_BT_CTLR_DATA_LENGTH */
 #endif /* CONFIG_BT_LL_SW_LLCP_LEGACY */
 
 	conn->ull.ticks_slot =

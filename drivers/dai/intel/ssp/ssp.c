@@ -5,10 +5,13 @@
  */
 
 #include <errno.h>
+#include <zephyr/sys/util_macro.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <zephyr/spinlock.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/pm/device.h>
+#include <zephyr/pm/device_runtime.h>
 #define LOG_DOMAIN dai_intel_ssp
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(LOG_DOMAIN);
@@ -674,13 +677,14 @@ static int dai_ssp_poll_for_register_delay(uint32_t reg, uint32_t mask,
 
 static inline void dai_ssp_pm_runtime_dis_ssp_clk_gating(struct dai_intel_ssp *dp, uint32_t index)
 {
-#if CONFIG_SOC_SERIES_INTEL_CAVS_V15
+#if CONFIG_DAI_SSP_CLK_FORCE_DYNAMIC_CLOCK_GATING
 	uint32_t shim_reg;
 
 	shim_reg = sys_read32(dai_shim_base(dp) + SHIM_CLKCTL) |
-		(index < DAI_INTEL_SSP_NUM_BASE ?
+		(index < CONFIG_DAI_INTEL_SSP_NUM_BASE ?
 			SHIM_CLKCTL_I2SFDCGB(index) :
-			SHIM_CLKCTL_I2SEFDCGB(index - DAI_INTEL_SSP_NUM_BASE));
+			SHIM_CLKCTL_I2SEFDCGB(index -
+					      CONFIG_DAI_INTEL_SSP_NUM_BASE));
 
 	sys_write32(shim_reg, dai_shim_base(dp) + SHIM_CLKCTL);
 
@@ -690,13 +694,14 @@ static inline void dai_ssp_pm_runtime_dis_ssp_clk_gating(struct dai_intel_ssp *d
 
 static inline void dai_ssp_pm_runtime_en_ssp_clk_gating(struct dai_intel_ssp *dp, uint32_t index)
 {
-#if CONFIG_SOC_SERIES_INTEL_CAVS_V15
+#if CONFIG_DAI_SSP_CLK_FORCE_DYNAMIC_CLOCK_GATING
 	uint32_t shim_reg;
 
 	shim_reg = sys_read32(dai_shim_base(dp) + SHIM_CLKCTL) &
-		~(index < DAI_INTEL_SSP_NUM_BASE ?
+		~(index < CONFIG_DAI_INTEL_SSP_NUM_BASE ?
 			SHIM_CLKCTL_I2SFDCGB(index) :
-			SHIM_CLKCTL_I2SEFDCGB(index - DAI_INTEL_SSP_NUM_BASE));
+			SHIM_CLKCTL_I2SEFDCGB(index -
+					      CONFIG_DAI_INTEL_SSP_NUM_BASE));
 
 	sys_write32(shim_reg, dai_shim_base(dp) + SHIM_CLKCTL);
 
@@ -706,7 +711,7 @@ static inline void dai_ssp_pm_runtime_en_ssp_clk_gating(struct dai_intel_ssp *dp
 
 static void dai_ssp_pm_runtime_en_ssp_power(struct dai_intel_ssp *dp, uint32_t index)
 {
-#if CONFIG_SOC_SERIES_INTEL_CAVS_V25
+#if CONFIG_DAI_SSP_HAS_POWER_CONTROL
 	int ret;
 
 	LOG_INF("%s en_ssp_power index %d", __func__, index);
@@ -724,12 +729,15 @@ static void dai_ssp_pm_runtime_en_ssp_power(struct dai_intel_ssp *dp, uint32_t i
 	}
 
 	LOG_INF("%s I2SLCTL", __func__);
-#endif
+#else
+	ARG_UNUSED(dp);
+	ARG_UNUSED(index);
+#endif /* CONFIG_DAI_SSP_HAS_POWER_CONTROL */
 }
 
 static void dai_ssp_pm_runtime_dis_ssp_power(struct dai_intel_ssp *dp, uint32_t index)
 {
-#if CONFIG_SOC_SERIES_INTEL_CAVS_V25
+#if CONFIG_DAI_SSP_HAS_POWER_CONTROL
 	int ret;
 
 	LOG_INF("%s index %d", __func__, index);
@@ -747,7 +755,10 @@ static void dai_ssp_pm_runtime_dis_ssp_power(struct dai_intel_ssp *dp, uint32_t 
 	}
 
 	LOG_INF("%s I2SLCTL", __func__);
-#endif
+#else
+	ARG_UNUSED(dp);
+	ARG_UNUSED(index);
+#endif /* CONFIG_DAI_SSP_HAS_POWER_CONTROL */
 }
 
 /* empty SSP transmit FIFO */
@@ -1522,7 +1533,8 @@ out:
 	return ret;
 }
 
-static int dai_ssp_set_config_blob(struct dai_intel_ssp *dp, const void *spec_config)
+static int dai_ssp_set_config_blob(struct dai_intel_ssp *dp, const struct dai_config *cfg,
+				    const void *spec_config)
 {
 	const struct dai_intel_ipc4_ssp_configuration_blob *blob = spec_config;
 	struct dai_intel_ssp_pdata *ssp = dai_get_drvdata(dp);
@@ -1538,7 +1550,11 @@ static int dai_ssp_set_config_blob(struct dai_intel_ssp *dp, const void *spec_co
 	ssrsa = blob->i2s_driver_config.i2s_config.ssrsa;
 
 	sys_write32(ssc0, dai_base(dp) + SSCR0);
+	sys_write32(blob->i2s_driver_config.i2s_config.ssc2 & ~SSCR2_SFRMEN,
+			dai_base(dp) + SSCR2); /* hardware specific flow */
 	sys_write32(blob->i2s_driver_config.i2s_config.ssc1, dai_base(dp) + SSCR1);
+	sys_write32(blob->i2s_driver_config.i2s_config.ssc2 | SSCR2_SFRMEN,
+			dai_base(dp) + SSCR2); /* hardware specific flow */
 	sys_write32(blob->i2s_driver_config.i2s_config.ssc2, dai_base(dp) + SSCR2);
 	sys_write32(blob->i2s_driver_config.i2s_config.ssc3, dai_base(dp) + SSCR3);
 	sys_write32(blob->i2s_driver_config.i2s_config.sspsp, dai_base(dp) + SSPSP);
@@ -1566,7 +1582,7 @@ static int dai_ssp_set_config_blob(struct dai_intel_ssp *dp, const void *spec_co
 	ssp->params.tdm_slots = SSCR0_FRDC_GET(ssc0);
 	ssp->params.tx_slots = SSTSA_GET(sstsa);
 	ssp->params.rx_slots = SSRSA_GET(ssrsa);
-	ssp->params.fsync_rate = 48000;
+	ssp->params.fsync_rate = cfg->rate;
 
 	ssp->state[DAI_DIR_PLAYBACK] = DAI_STATE_PRE_RUNNING;
 	ssp->state[DAI_DIR_CAPTURE] = DAI_STATE_PRE_RUNNING;
@@ -1748,7 +1764,10 @@ static void dai_ssp_stop(struct dai_intel_ssp *dp, int direction)
 	/* disable SSP port if no users */
 	if (ssp->state[DAI_DIR_CAPTURE] == DAI_STATE_PRE_RUNNING &&
 	    ssp->state[DAI_DIR_PLAYBACK] == DAI_STATE_PRE_RUNNING) {
-		if (!(ssp->clk_active & SSP_CLK_BCLK_ES_REQ)) {
+		bool clear_rse_bits = COND_CODE_1(CONFIG_INTEL_ADSP_CAVS,
+						 (!(ssp->clk_active & SSP_CLK_BCLK_ES_REQ)),
+						 (false));
+		if (clear_rse_bits) {
 			/* clear TRSE/RSRE before SSE */
 			dai_ssp_update_bits(dp, SSCR1, SSCR1_TSRE | SSCR1_RSRE, 0);
 			dai_ssp_update_bits(dp, SSCR0, SSCR0_SSE, 0);
@@ -1781,7 +1800,7 @@ static int dai_ssp_trigger(const struct device *dev, enum dai_dir dir,
 	struct dai_intel_ssp_pdata *ssp = dai_get_drvdata(dp);
 	int array_index = SSP_ARRAY_INDEX(dir);
 
-	LOG_INF("%s cmd %d", __func__, cmd);
+	LOG_DBG("%s cmd %d", __func__, cmd);
 
 	switch (cmd) {
 	case DAI_TRIGGER_START:
@@ -1812,6 +1831,9 @@ static const struct dai_config *dai_ssp_config_get(const struct device *dev, enu
 	struct dai_intel_ssp *dp = (struct dai_intel_ssp *)dev->data;
 	struct dai_intel_ssp_pdata *ssp = dai_get_drvdata(dp);
 
+	if (!ssp)
+		return params;
+
 	params->rate = ssp->params.fsync_rate;
 
 	if (dir == DAI_DIR_PLAYBACK) {
@@ -1833,7 +1855,7 @@ static int dai_ssp_config_set(const struct device *dev, const struct dai_config 
 	if (cfg->type == DAI_INTEL_SSP) {
 		return dai_ssp_set_config_tplg(dp, cfg, bespoke_cfg);
 	} else {
-		return dai_ssp_set_config_blob(dp, bespoke_cfg);
+		return dai_ssp_set_config_blob(dp, cfg, bespoke_cfg);
 	}
 }
 
@@ -1913,52 +1935,39 @@ static int dai_ssp_remove(struct dai_intel_ssp *dp)
 	return 0;
 }
 
-static int dai_ssp_probe_wrapper(const struct device *dev)
+static int ssp_pm_action(const struct device *dev, enum pm_device_action action)
 {
 	struct dai_intel_ssp *dp = (struct dai_intel_ssp *)dev->data;
-	k_spinlock_key_t key;
-	int ret = 0;
-
-	key = k_spin_lock(&dp->lock);
-
-	if (dp->sref == 0) {
-		ret = dai_ssp_probe(dp);
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		dai_ssp_remove(dp);
+		break;
+	case PM_DEVICE_ACTION_RESUME:
+		dai_ssp_probe(dp);
+		break;
+	case PM_DEVICE_ACTION_TURN_OFF:
+	case PM_DEVICE_ACTION_TURN_ON:
+		/* All device pm is handled during resume and suspend */
+		break;
+	default:
+		return -ENOTSUP;
 	}
 
-	if (!ret) {
-		dp->sref++;
-	}
-
-	k_spin_unlock(&dp->lock, key);
-
-	return ret;
-}
-
-static int dai_ssp_remove_wrapper(const struct device *dev)
-{
-	struct dai_intel_ssp *dp = (struct dai_intel_ssp *)dev->data;
-	k_spinlock_key_t key;
-	int ret = 0;
-
-	key = k_spin_lock(&dp->lock);
-
-	if (--dp->sref == 0) {
-		ret = dai_ssp_remove(dp);
-	}
-
-	k_spin_unlock(&dp->lock, key);
-
-	return ret;
+	return 0;
 }
 
 static int ssp_init(const struct device *dev)
 {
-	return 0;
+	int ret;
+
+	pm_device_init_suspended(dev);
+	ret = pm_device_runtime_enable(dev);
+	return ret;
 }
 
 static struct dai_driver_api dai_intel_ssp_api_funcs = {
-	.probe			= dai_ssp_probe_wrapper,
-	.remove			= dai_ssp_remove_wrapper,
+	.probe			= pm_device_runtime_get,
+	.remove			= pm_device_runtime_put,
 	.config_set		= dai_ssp_config_set,
 	.config_get		= dai_ssp_config_get,
 	.trigger		= dai_ssp_trigger,
@@ -1987,7 +1996,10 @@ static struct dai_intel_ssp_mn ssp_mn_divider = {
 static const char irq_name_level5_z[] = "level5";
 
 #define DAI_INTEL_SSP_DEVICE_INIT(n)						\
-	static struct dai_config dai_intel_ssp_config_##n;			\
+	static struct dai_config dai_intel_ssp_config_##n = {			\
+		.type = DAI_INTEL_SSP,						\
+		.dai_index = n,							\
+	};									\
 	static struct dai_intel_ssp dai_intel_ssp_data_##n = {			\
 		.index = n,							\
 		.plat_data = {							\
@@ -2011,8 +2023,10 @@ static const char irq_name_level5_z[] = "level5";
 		},								\
 	};								\
 									\
+	PM_DEVICE_DT_INST_DEFINE(n, ssp_pm_action); \
+									\
 	DEVICE_DT_INST_DEFINE(n,					\
-			ssp_init, NULL,					\
+			ssp_init, PM_DEVICE_DT_INST_GET(n),		\
 			&dai_intel_ssp_data_##n,			\
 			&dai_intel_ssp_config_##n,			\
 			POST_KERNEL, 32,				\

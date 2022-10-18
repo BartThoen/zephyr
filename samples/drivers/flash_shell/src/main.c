@@ -6,15 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <zephyr/zephyr.h>
+#include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/device.h>
-#include <soc.h>
-#include <stdlib.h>
 
 LOG_MODULE_REGISTER(app);
 

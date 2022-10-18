@@ -354,8 +354,8 @@ static ALWAYS_INLINE struct k_thread *next_up(void)
 		end_thread(_current);
 	}
 
-	int queued = z_is_thread_queued(_current);
-	int active = !z_is_thread_prevented_from_running(_current);
+	bool queued = z_is_thread_queued(_current);
+	bool active = !z_is_thread_prevented_from_running(_current);
 
 	if (thread == NULL) {
 		thread = _current_cpu->idle_thread;
@@ -1601,8 +1601,8 @@ static int cpu_mask_mod(k_tid_t thread, uint32_t enable_mask, uint32_t disable_m
 	int ret = 0;
 
 #ifdef CONFIG_SCHED_CPU_MASK_PIN_ONLY
-	__ASSERT((thread->base.thread_state != _THREAD_PRESTART),
-		 "Only PRESTARTED threads can change CPU pin");
+	__ASSERT(z_is_thread_prevented_from_running(thread),
+		 "Running threads cannot change CPU pin");
 #endif
 
 	LOCKED(&sched_spinlock) {

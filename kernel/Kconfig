@@ -324,7 +324,6 @@ config INIT_STACKS
 config BOOT_BANNER
 	bool "Boot banner"
 	default y
-	depends on CONSOLE_HAS_DRIVER
 	select PRINTK
 	select EARLY_CONSOLE
 	help
@@ -555,6 +554,13 @@ config EVENTS
 	  Note that setting this option slightly increases the size of the
 	  thread structure.
 
+config PIPES
+	bool "Pipe objects"
+	help
+	  This option enables kernel pipes. A pipe is a kernel object that
+	  allows a thread to send a byte stream to another thread. Pipes can
+	  be used to synchronously transfer chunks of data in whole or in part.
+
 config KERNEL_MEM_POOL
 	bool "Use Kernel Memory Pool"
 	default y
@@ -644,10 +650,11 @@ config SYS_CLOCK_EXISTS
 	bool "System clock exists and is enabled"
 	default y
 	help
-	  This option specifies that the kernel lacks timer support.
+	  This option specifies that the kernel has timer support.
+
 	  Some device configurations can eliminate significant code if
 	  this is disabled.  Obviously timeout-related APIs will not
-	  work.
+	  work when disabled.
 
 config TIMEOUT_64BIT
 	bool "Store kernel timeouts in 64 bit precision"
@@ -922,7 +929,7 @@ config TICKLESS_KERNEL
 
 config TOOLCHAIN_SUPPORTS_THREAD_LOCAL_STORAGE
 	bool
-	default y if "$(ZEPHYR_TOOLCHAIN_VARIANT)" = "zephyr"
+	default y if "$(ZEPHYR_TOOLCHAIN_VARIANT)" = "zephyr" || "$(ZEPHYR_TOOLCHAIN_SUPPORTS_THREAD_LOCAL_STORAGE)" = "y"
 	help
 	  Hidden option to signal that toolchain supports generating code
 	  with thread local storage.

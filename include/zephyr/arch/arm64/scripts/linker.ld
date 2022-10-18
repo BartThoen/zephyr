@@ -160,11 +160,17 @@ SECTIONS
 
     SECTION_PROLOGUE(_RODATA_SECTION_NAME,,)
     {
-        KEEP(*(_IRQ_VECTOR_TABLE_SECTION_SYMS))
-
         *(.rodata)
         *(".rodata.*")
         *(.gnu.linkonce.r.*)
+
+        /*
+         * The following is a workaround to allow compiling with GCC 12 and
+         * above, which may emit "GOT indirections" for the weak symbol
+         * references (see the GitHub issue zephyrproject-rtos/sdk-ng#547).
+         */
+        *(.got)
+        *(.got.plt)
 
 /* Located in generated directory. This file is populated by the
  * zephyr_linker_sources() Cmake function.
@@ -188,9 +194,7 @@ SECTIONS
      */
     /DISCARD/ :
     {
-        *(.got.plt)
         *(.igot.plt)
-        *(.got)
         *(.igot)
     }
 

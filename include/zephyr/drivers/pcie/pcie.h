@@ -244,6 +244,7 @@ extern bool pcie_connect_dynamic_irq(pcie_bdf_t bdf,
 #define PCIE_CONF_CMDSTAT_IO		0x00000001U  /* I/O access enable */
 #define PCIE_CONF_CMDSTAT_MEM		0x00000002U  /* mem access enable */
 #define PCIE_CONF_CMDSTAT_MASTER	0x00000004U  /* bus master enable */
+#define PCIE_CONF_CMDSTAT_INTERRUPT	0x00080000U  /* interrupt status */
 #define PCIE_CONF_CMDSTAT_CAPS		0x00100000U  /* capabilities list */
 
 /*
@@ -370,9 +371,9 @@ extern bool pcie_connect_dynamic_irq(pcie_bdf_t bdf,
 #define PCIE_CONF_INTR_IRQ(w)	((w) & 0xFFU)
 #define PCIE_CONF_INTR_IRQ_NONE	0xFFU  /* no interrupt routed */
 
-#define PCIE_MAX_BUS  (0xFFFFFFFF & PCIE_BDF_BUS_MASK)
-#define PCIE_MAX_DEV  (0xFFFFFFFF & PCIE_BDF_DEV_MASK)
-#define PCIE_MAX_FUNC (0xFFFFFFFF & PCIE_BDF_FUNC_MASK)
+#define PCIE_MAX_BUS  (0xFFFFFFFFU & PCIE_BDF_BUS_MASK)
+#define PCIE_MAX_DEV  (0xFFFFFFFFU & PCIE_BDF_DEV_MASK)
+#define PCIE_MAX_FUNC (0xFFFFFFFFU & PCIE_BDF_FUNC_MASK)
 
 /**
  * @brief Initialize an interrupt handler for a PCIe endpoint IRQ

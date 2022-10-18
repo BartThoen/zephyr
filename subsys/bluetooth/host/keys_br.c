@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/zephyr.h>
+#include <zephyr/kernel.h>
 #include <string.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
@@ -171,7 +171,7 @@ static int link_key_set(const char *name, size_t len_rd,
 		return -EINVAL;
 	}
 
-	BT_DBG("name %s val %s", log_strdup(name),
+	BT_DBG("name %s val %s", name,
 	       len ? bt_hex(val, sizeof(val)) : "(null)");
 
 	err = bt_settings_decode_key(name, &le_addr);

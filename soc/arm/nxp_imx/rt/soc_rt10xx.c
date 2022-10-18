@@ -18,8 +18,10 @@
 #include <fsl_iomuxc.h>
 #if CONFIG_USB_DC_NXP_EHCI
 #include "usb_phy.h"
-#include "usb_dc_mcux.h"
+#include "usb.h"
 #endif
+
+#define CCM_NODE	DT_INST(0, nxp_imx_ccm)
 
 #ifdef CONFIG_INIT_ARM_PLL
 /* ARM PLL configuration for RUN mode */
@@ -103,8 +105,10 @@ static ALWAYS_INLINE void clock_init(void)
 	/* Boot ROM did initialize the XTAL, here we only sets external XTAL
 	 * OSC freq
 	 */
-	CLOCK_SetXtalFreq(24000000U);
-	CLOCK_SetRtcXtalFreq(32768U);
+	CLOCK_SetXtalFreq(DT_PROP(DT_CLOCKS_CTLR_BY_NAME(CCM_NODE, xtal),
+				  clock_frequency));
+	CLOCK_SetRtcXtalFreq(DT_PROP(DT_CLOCKS_CTLR_BY_NAME(CCM_NODE, rtc_xtal),
+				     clock_frequency));
 
 	/* Set PERIPH_CLK2 MUX to OSC */
 	CLOCK_SetMux(kCLOCK_PeriphClk2Mux, 0x1);
@@ -210,6 +214,15 @@ static ALWAYS_INLINE void clock_init(void)
 #ifdef CONFIG_CAN_MCUX_FLEXCAN
 	CLOCK_SetDiv(kCLOCK_CanDiv, 1); /* Set CAN_CLK_PODF. */
 	CLOCK_SetMux(kCLOCK_CanMux, 2); /* Set Can clock source. */
+#endif
+
+#ifdef CONFIG_LOG_BACKEND_SWO
+	/* Enable ARM trace clock to enable SWO output */
+	CLOCK_EnableClock(kCLOCK_Trace);
+	/* Divide root clock output by 3 */
+	CLOCK_SetDiv(kCLOCK_TraceDiv, 3);
+	/* Source clock from 528MHz system PLL */
+	CLOCK_SetMux(kCLOCK_TraceMux, 0);
 #endif
 
 	/* Keep the system clock running so SYSTICK can wake up the system from

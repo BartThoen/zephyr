@@ -10,7 +10,6 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 
-#include <zephyr/zephyr.h>
 #include <zephyr/kernel.h>
 #include <zephyr/debug/stack.h>
 #include <zephyr/device.h>
@@ -54,7 +53,7 @@ NMI_API sint16 send(SOCKET sock, void *pvSendBuffer,
 NMI_API sint16 sendto(SOCKET sock, void *pvSendBuffer,
 		      uint16 u16SendLength, uint16 flags,
 		      struct sockaddr *pstrDestAddr, uint8 u8AddrLen);
-NMI_API sint8 close(SOCKET sock);
+NMI_API sint8 winc1500_close(SOCKET sock);
 
 enum socket_errors {
 	SOCK_ERR_NO_ERROR = 0,
@@ -596,7 +595,7 @@ static int winc1500_put(struct net_context *context)
 
 	memset(&(context->remote), 0, sizeof(struct sockaddr_in));
 	context->flags &= ~NET_CONTEXT_REMOTE_ADDR_SET;
-	ret = close(sock);
+	ret = winc1500_close(sock);
 
 	net_pkt_unref(sd->rx_pkt);
 
@@ -899,7 +898,7 @@ static void handle_socket_msg_accept(struct socket_data *sd, void *pvMsg)
 		 * context as well. The new context gives us another socket
 		 * so we have to close that one first.
 		 */
-		close((int)a_sd->context->offload_context);
+		winc1500_close((int)a_sd->context->offload_context);
 
 		a_sd->context->offload_context =
 				(void *)((int)accept_msg->sock);
@@ -1101,7 +1100,7 @@ static void winc1500_iface_init(struct net_if *iface)
 }
 
 static const struct net_wifi_mgmt_offload winc1500_api = {
-	.iface_api.init = winc1500_iface_init,
+	.wifi_iface.init = winc1500_iface_init,
 	.scan		= winc1500_mgmt_scan,
 	.connect	= winc1500_mgmt_connect,
 	.disconnect	= winc1500_mgmt_disconnect,

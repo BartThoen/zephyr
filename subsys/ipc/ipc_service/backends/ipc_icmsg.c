@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/zephyr.h>
+#include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <string.h>
 #include <zephyr/drivers/mbox.h>
@@ -22,8 +22,8 @@ BUILD_ASSERT(CB_BUF_SIZE <= UINT16_MAX);
 
 struct backend_data_t {
 	/* Tx/Rx buffers. */
-	struct icmsg_buf *tx_ib;
-	struct icmsg_buf *rx_ib;
+	struct spsc_pbuf *tx_ib;
+	struct spsc_pbuf *rx_ib;
 
 	/* Backend ops for an endpoint. */
 	const struct ipc_ept_cfg *cfg;
@@ -49,7 +49,7 @@ static void mbox_callback_process(struct k_work *item)
 	uint8_t cb_buffer[CB_BUF_SIZE] __aligned(4);
 
 	atomic_t state = atomic_get(&dev_data->state);
-	int len = icmsg_buf_read(dev_data->rx_ib, cb_buffer, CB_BUF_SIZE);
+	int len = spsc_pbuf_read(dev_data->rx_ib, cb_buffer, CB_BUF_SIZE);
 
 	__ASSERT_NO_MSG(len <= CB_BUF_SIZE);
 
@@ -65,14 +65,6 @@ static void mbox_callback_process(struct k_work *item)
 		if (dev_data->cfg->cb.received) {
 			dev_data->cfg->cb.received(cb_buffer, len, dev_data->cfg->priv);
 		}
-
-		/* Reading with NULL buffer to know if there are data in the
-		 * buffer to be read.
-		 */
-		len = icmsg_buf_read(dev_data->rx_ib, NULL, 0);
-		if (len > 0) {
-			(void)k_work_submit(&dev_data->mbox_work);
-		}
 	} else {
 		__ASSERT_NO_MSG(state == ICMSG_STATE_BUSY);
 		if (len != sizeof(magic) || memcmp(magic, cb_buffer, len)) {
@@ -85,6 +77,19 @@ static void mbox_callback_process(struct k_work *item)
 		}
 
 		atomic_set(&dev_data->state, ICMSG_STATE_READY);
+	}
+
+	/* Reading with NULL buffer to know if there are data in the
+	 * buffer to be read.
+	 */
+	len = spsc_pbuf_read(dev_data->rx_ib, NULL, 0);
+	if (len > 0) {
+		if (k_work_submit(&dev_data->mbox_work) < 0) {
+			/* The mbox processing work is never canceled.
+			 * The negative error code should never be seen.
+			 */
+			__ASSERT_NO_MSG(false);
+		}
 	}
 }
 
@@ -133,7 +138,7 @@ static int register_ept(const struct device *instance, void **token,
 		return ret;
 	}
 
-	ret = icmsg_buf_write(dev_data->tx_ib, magic, sizeof(magic));
+	ret = spsc_pbuf_write(dev_data->tx_ib, magic, sizeof(magic));
 	if (ret < sizeof(magic)) {
 		__ASSERT_NO_MSG(ret == sizeof(magic));
 		return ret;
@@ -144,7 +149,7 @@ static int register_ept(const struct device *instance, void **token,
 		return ret;
 	}
 
-	ret = icmsg_buf_read(dev_data->rx_ib, NULL, 0);
+	ret = spsc_pbuf_read(dev_data->rx_ib, NULL, 0);
 	if (ret > 0) {
 		(void)k_work_submit(&dev_data->mbox_work);
 	}
@@ -168,7 +173,7 @@ static int send(const struct device *instance, void *token,
 		return -ENODATA;
 	}
 
-	ret = icmsg_buf_write(dev_data->tx_ib, msg, len);
+	ret = spsc_pbuf_write(dev_data->tx_ib, msg, len);
 	if (ret < 0) {
 		return ret;
 	} else if (ret < len) {
@@ -190,9 +195,11 @@ static int backend_init(const struct device *instance)
 	const struct backend_config_t *conf = instance->config;
 	struct backend_data_t *dev_data = instance->data;
 
-	__ASSERT_NO_MSG(conf->tx_shm_size > sizeof(struct icmsg_buf));
+	__ASSERT_NO_MSG(conf->tx_shm_size > sizeof(struct spsc_pbuf));
 
-	dev_data->tx_ib = icmsg_buf_init((void *)conf->tx_shm_addr, conf->tx_shm_size);
+	dev_data->tx_ib = spsc_pbuf_init((void *)conf->tx_shm_addr,
+					 conf->tx_shm_size,
+					 SPSC_PBUF_CACHE);
 	dev_data->rx_ib = (void *)conf->rx_shm_addr;
 
 	return 0;

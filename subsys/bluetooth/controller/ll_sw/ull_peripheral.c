@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/zephyr.h>
+#include <zephyr/kernel.h>
 #include <soc.h>
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/sys/byteorder.h>
@@ -35,6 +35,7 @@
 #include "lll_conn.h"
 #include "lll_peripheral.h"
 #include "lll_filter.h"
+#include "lll_conn_iso.h"
 
 #if !defined(CONFIG_BT_LL_SW_LLCP_LEGACY)
 #include "ull_tx_queue.h"
@@ -52,7 +53,11 @@
 #include "ll.h"
 
 #if (!defined(CONFIG_BT_LL_SW_LLCP_LEGACY))
-#include "ll_sw/ull_llcp.h"
+#include "isoal.h"
+#include "ull_iso_types.h"
+#include "ull_conn_iso_types.h"
+
+#include "ull_llcp.h"
 #endif
 
 #define BT_DBG_ENABLED IS_ENABLED(CONFIG_BT_DEBUG_HCI_DRIVER)
@@ -213,6 +218,9 @@ void ull_periph_setup(struct node_rx_hdr *rx, struct node_rx_ftr *ftr,
 	ull_cp_prt_reload_set(conn, conn_interval_us);
 #endif /* CONFIG_BT_LL_SW_LLCP_LEGACY */
 
+#if (!defined(CONFIG_BT_LL_SW_LLCP_LEGACY))
+	conn->connect_accept_to = DEFAULT_CONNECTION_ACCEPT_TIMEOUT_US;
+#endif /* !defined(CONFIG_BT_LL_SW_LLCP_LEGACY) */
 #if defined(CONFIG_BT_CTLR_LE_PING)
 	/* APTO in no. of connection events */
 	conn->apto_reload = RADIO_CONN_EVENTS((30 * 1000 * 1000),
@@ -347,8 +355,8 @@ void ull_periph_setup(struct node_rx_hdr *rx, struct node_rx_ftr *ftr,
 	max_tx_time = lll->max_tx_time;
 	max_rx_time = lll->max_rx_time;
 #else
-	max_tx_time = lll->dle.local.max_tx_time;
-	max_rx_time = lll->dle.local.max_rx_time;
+	max_tx_time = lll->dle.eff.max_tx_time;
+	max_rx_time = lll->dle.eff.max_rx_time;
 #endif
 #else /* !CONFIG_BT_CTLR_PHY */
 	max_tx_time = PDU_DC_MAX_US(PDU_DC_PAYLOAD_SIZE_MIN, PHY_1M);

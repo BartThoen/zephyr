@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/zephyr.h>
+#include <zephyr/kernel.h>
 #include <errno.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
@@ -302,7 +302,7 @@ int bt_mesh_input_number(uint32_t num)
 
 int bt_mesh_input_string(const char *str)
 {
-	BT_DBG("%s", log_strdup(str));
+	BT_DBG("%s", str);
 
 	if (strlen(str) > PROV_IO_OOB_SIZE_MAX ||
 			strlen(str) > bt_mesh_prov_link.oob_size) {
