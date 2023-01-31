@@ -10,7 +10,8 @@
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(adc_nrfx_saadc, CONFIG_ADC_LOG_LEVEL);
+#include <zephyr/irq.h>
+LOG_MODULE_REGISTER(adc_nrfx_saadc);
 
 #define DT_DRV_COMPAT nordic_nrf_saadc
 
