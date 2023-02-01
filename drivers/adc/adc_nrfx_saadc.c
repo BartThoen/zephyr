@@ -345,7 +345,7 @@ static int start_read(const struct device *dev,
 		return -EINVAL;
 	}
 
-	channels_cnt = popcount(nrfx_saadc_channels_configured_get() &
+	channels_cnt = POPCOUNT(nrfx_saadc_channels_configured_get() &
 				selected_channels);
 	if (channels_cnt == 0) {
 		LOG_ERR("No channel configured");
